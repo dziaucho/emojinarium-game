@@ -15,7 +15,7 @@ const io = socketIo(server, {
 
 // Middleware
 app.use(cors());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static('public'));
 
 // Serve the main HTML file
 app.get('/', (req, res) => {
@@ -120,7 +120,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room || room.host !== socket.id) return;
 
-    // Set random movie (in real implementation, you'd have a movie database)
+    // Set random movie
     const movies = [
       { title: "Титаник", year: "1997" },
       { title: "Матрица", year: "1999" },
