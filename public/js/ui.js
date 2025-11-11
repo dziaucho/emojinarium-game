@@ -1,252 +1,174 @@
-export class NetworkGame {
-    constructor() {
-        this.socket = null;
-        this.roomId = null;
-        this.playerId = null;
-        this.playerName = 'Игрок';
-        this.isConnected = false;
-        this.isHost = false;
-        this.players = new Map();
-        this.currentRoomId = null;
-    }
+export class UIManager {
+    // ... остальной код ...
 
-    createRoom(playerName) {
-        return new Promise((resolve, reject) => {
-            this.socket = io();
-            this.playerName = playerName;
-            
-            this.socket.on('connect', () => {
-                this.isConnected = true;
-                this.playerId = this.socket.id;
+    initModal(onCreateRoom, onJoinRoom, onStartSingleGame) {
+        const modal = document.getElementById('modeModal');
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        const serverSettings = document.getElementById('serverSettings');
+        const startBtn = document.getElementById('startBtn');
+        const statusElement = document.getElementById('networkStatus');
+        const createRoomBtn = document.getElementById('createRoomBtn');
+        const joinRoomBtn = document.getElementById('joinRoomBtn');
+        const roomIdInput = document.getElementById('roomId');
+        const playerNameInput = document.getElementById('playerName');
+        const roomIdGroup = roomIdInput.closest('.form-group');
+
+        // Восстанавливаем ID комнаты если есть
+        const savedRoomId = localStorage.getItem('lastRoomId');
+        if (savedRoomId) {
+            roomIdInput.value = savedRoomId;
+        }
+
+        // Переключение режимов
+        modeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                modeBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const gameMode = btn.dataset.mode;
                 
-                // Запрашиваем создание комнаты на сервере
-                this.socket.emit('create_room', {
-                    playerName: playerName
-                });
-            });
-            
-            this.socket.on('room_created', (data) => {
-                this.roomId = data.roomId;
-                this.currentRoomId = data.roomId;
-                this.isHost = true;
-                
-                this.players.set(this.playerId, data.player);
-                
-                resolve({
-                    success: true,
-                    playerId: this.playerId,
-                    isHost: true,
-                    roomId: data.roomId
-                });
-            });
-
-            this.setupEventListeners();
-            this.setupErrorHandling(reject);
-        });
-    }
-
-    joinRoom(roomId, playerName) {
-        return new Promise((resolve, reject) => {
-            this.socket = io();
-            this.roomId = roomId;
-            this.playerName = playerName;
-            this.currentRoomId = roomId;
-            
-            this.socket.on('connect', () => {
-                this.isConnected = true;
-                this.playerId = this.socket.id;
-                
-                this.socket.emit('join_room', {
-                    roomId: roomId,
-                    playerName: playerName
-                });
-                
-                resolve({
-                    success: true,
-                    playerId: this.playerId,
-                    isHost: false,
-                    roomId: roomId
-                });
-            });
-
-            this.socket.on('join_error', (data) => {
-                reject(new Error(data.message));
-            });
-
-            this.setupEventListeners();
-            this.setupErrorHandling(reject);
-        });
-    }
-
-    setupEventListeners() {
-        this.socket.on('player_joined', (data) => {
-            this.players.clear();
-            data.players.forEach(player => {
-                this.players.set(player.id, player);
-                if (player.id === this.playerId) {
-                    this.isHost = player.isHost;
+                if (gameMode === 'network') {
+                    serverSettings.classList.add('active');
+                    statusElement.textContent = 'Выберите действие...';
+                    statusElement.className = 'status-message status-waiting';
+                    // Показываем поле ID комнаты по умолчанию
+                    roomIdGroup.style.display = 'block';
+                } else {
+                    serverSettings.classList.remove('active');
                 }
             });
-            
-            if (this.onPlayersUpdate) {
-                this.onPlayersUpdate(Array.from(this.players.values()));
+        });
+
+        // Создание комнаты - ПРОСТАЯ ВЕРСИЯ
+        createRoomBtn.addEventListener('click', async () => {
+            const playerName = playerNameInput.value.trim();
+
+            if (!playerName) {
+                statusElement.textContent = 'Введите ваше имя!';
+                return;
+            }
+
+            statusElement.textContent = 'Создаем комнату...';
+            createRoomBtn.disabled = true;
+            joinRoomBtn.disabled = true;
+
+            try {
+                await onCreateRoom(playerName, statusElement);
+            } catch (error) {
+                statusElement.textContent = 'Ошибка создания комнаты!';
+                statusElement.className = 'status-message status-waiting';
+                createRoomBtn.disabled = false;
+                joinRoomBtn.disabled = false;
             }
         });
 
-        this.socket.on('room_state', (data) => {
-            if (this.onRoomState) {
-                this.onRoomState(data);
+        // Присоединение к комнате - ПРОСТАЯ ВЕРСИЯ
+        joinRoomBtn.addEventListener('click', async () => {
+            const roomId = roomIdInput.value.trim();
+            const playerName = playerNameInput.value.trim();
+
+            if (!roomId) {
+                statusElement.textContent = 'Введите ID комнаты!';
+                return;
+            }
+
+            if (!playerName) {
+                statusElement.textContent = 'Введите ваше имя!';
+                return;
+            }
+
+            statusElement.textContent = 'Присоединяемся к комнате...';
+            createRoomBtn.disabled = true;
+            joinRoomBtn.disabled = true;
+
+            try {
+                await onJoinRoom(roomId, playerName, statusElement);
+            } catch (error) {
+                statusElement.textContent = error.message || 'Не удалось присоединиться! Проверьте ID комнаты.';
+                statusElement.className = 'status-message status-waiting';
+                createRoomBtn.disabled = false;
+                joinRoomBtn.disabled = false;
             }
         });
 
-        this.socket.on('game_object_added', (data) => {
-            if (this.onGameObjectAdded) {
-                this.onGameObjectAdded(data.object);
-            }
-        });
-
-        this.socket.on('game_object_removed', (data) => {
-            if (this.onGameObjectRemoved) {
-                this.onGameObjectRemoved(data.objectId);
-            }
-        });
-
-        this.socket.on('game_object_updated', (data) => {
-            if (this.onGameObjectUpdated) {
-                this.onGameObjectUpdated(data.object);
-            }
-        });
-
-        this.socket.on('clear_game_field', (data) => {
-            if (this.onClearGameField) {
-                this.onClearGameField();
-            }
-        });
-
-        this.socket.on('game_started', (data) => {
-            if (this.onGameStarted) {
-                this.onGameStarted(data);
-            }
-        });
-
-        this.socket.on('movie_reveal', (data) => {
-            if (this.onMovieReveal) {
-                this.onMovieReveal(data);
-            }
-        });
-
-        this.socket.on('chat_message', (data) => {
-            if (this.onChatMessage) {
-                this.onChatMessage(data);
-            }
+        // Одиночная игра
+        startBtn.addEventListener('click', () => {
+            const playerName = playerNameInput.value.trim() || 'Игрок';
+            onStartSingleGame(playerName);
         });
     }
 
-    setupErrorHandling(reject) {
-        this.socket.on('connect_error', (error) => {
-            reject(error);
+    showRoomCreated(roomId, statusElement) {
+        statusElement.textContent = `Комната создана! ID: ${roomId}`;
+        statusElement.className = 'status-message status-connected';
+        
+        // Показываем кнопку копирования
+        this.showCopyRoomIdButton(roomId, statusElement);
+    }
+
+    showCopyRoomIdButton(roomId, statusElement) {
+        // Удаляем старую кнопку если есть
+        const oldBtn = document.querySelector('.copy-room-btn');
+        if (oldBtn) {
+            oldBtn.remove();
+        }
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'action-btn copy-room-btn';
+        copyBtn.textContent = '📋 Скопировать ID комнаты';
+        copyBtn.style.marginTop = '10px';
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(roomId).then(() => {
+                statusElement.textContent = 'ID комнаты скопирован!';
+                setTimeout(() => {
+                    statusElement.textContent = `Комната создана! ID: ${roomId}`;
+                }, 2000);
+            }).catch(() => {
+                // Fallback для старых браузеров
+                const tempInput = document.createElement('input');
+                tempInput.value = roomId;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                document.execCommand('copy');
+                document.body.removeChild(tempInput);
+                statusElement.textContent = 'ID скопирован!';
+            });
         });
         
-        setTimeout(() => {
-            if (!this.isConnected) {
-                reject(new Error('Connection timeout'));
-            }
-        }, 5000);
+        const actionButtons = document.querySelector('.action-buttons');
+        if (actionButtons) {
+            actionButtons.parentNode.appendChild(copyBtn);
+        }
+    }
+
+    initGameControls(onNewMovie, onClearField, onDisconnect, isHost = false) {
+        const newMovieBtn = document.getElementById('newMovieBtn');
+        const clearFieldBtn = document.getElementById('clearFieldBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+
+        // Удаляем старые обработчики
+        newMovieBtn.replaceWith(newMovieBtn.cloneNode(true));
+        clearFieldBtn.replaceWith(clearFieldBtn.cloneNode(true));
+        disconnectBtn.replaceWith(disconnectBtn.cloneNode(true));
+
+        // Получаем обновленные элементы
+        const newNewMovieBtn = document.getElementById('newMovieBtn');
+        const newClearFieldBtn = document.getElementById('clearFieldBtn');
+        const newDisconnectBtn = document.getElementById('disconnectBtn');
+
+        // Показываем кнопки только хосту
+        if (isHost) {
+            newNewMovieBtn.style.display = 'block';
+            newClearFieldBtn.style.display = 'block';
+            newNewMovieBtn.addEventListener('click', onNewMovie);
+            newClearFieldBtn.addEventListener('click', onClearField);
+        } else {
+            newNewMovieBtn.style.display = 'none';
+            newClearFieldBtn.style.display = 'none';
+        }
+
+        // Кнопка отключения показывается всем
+        newDisconnectBtn.addEventListener('click', onDisconnect);
     }
 
     // ... остальные методы без изменений ...
-    disconnect() {
-        if (this.socket) {
-            this.socket.disconnect();
-        }
-        this.isConnected = false;
-        this.players.clear();
-    }
-
-    sendGameObjectAdded(object) {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('game_object_added', { object });
-    }
-
-    sendGameObjectRemoved(objectId) {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('game_object_removed', { objectId });
-    }
-
-    sendGameObjectUpdated(object) {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('game_object_updated', { object });
-    }
-
-    sendClearGameField() {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('clear_game_field', {});
-    }
-
-    sendMessage(message) {
-        if (!this.isConnected || !this.socket) return;
-        this.socket.emit('chat_message', { message });
-    }
-
-    startGame() {
-        if (!this.isConnected || !this.socket || !this.isHost) return;
-        this.socket.emit('start_game', {});
-    }
-
-    sendCorrectAnswer(playerId) {
-        if (!this.isConnected || !this.socket || !this.isHost) return;
-        this.socket.emit('correct_answer', { playerId });
-    }
-
-    // Event listeners
-    onPlayersUpdate(callback) {
-        this.onPlayersUpdate = callback;
-    }
-
-    onRoomState(callback) {
-        this.onRoomState = callback;
-    }
-
-    onGameObjectAdded(callback) {
-        this.onGameObjectAdded = callback;
-    }
-
-    onGameObjectRemoved(callback) {
-        this.onGameObjectRemoved = callback;
-    }
-
-    onGameObjectUpdated(callback) {
-        this.onGameObjectUpdated = callback;
-    }
-
-    onClearGameField(callback) {
-        this.onClearGameField = callback;
-    }
-
-    onGameStarted(callback) {
-        this.onGameStarted = callback;
-    }
-
-    onMovieReveal(callback) {
-        this.onMovieReveal = callback;
-    }
-
-    onChatMessage(callback) {
-        this.onChatMessage = callback;
-    }
-
-    updatePlayerScore(playerId, points) {
-        const player = this.players.get(playerId);
-        if (player) {
-            player.score += points;
-        }
-    }
-
-    getPlayers() {
-        return Array.from(this.players.values());
-    }
-
-    getCurrentRoomId() {
-        return this.currentRoomId;
-    }
 }
