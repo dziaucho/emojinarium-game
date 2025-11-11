@@ -1,177 +1,192 @@
-// server/server.js
-const WebSocket = require('ws');
+const express = require('express');
 const http = require('http');
-const url = require('url');
+const socketIo = require('socket.io');
+const path = require('path');
+const cors = require('cors');
 
-const server = http.createServer();
-const wss = new WebSocket.Server({ server });
-
-const rooms = new Map();
-
-class GameRoom {
-    constructor(id) {
-        this.id = id;
-        this.players = new Map();
-        this.host = null;
-        this.gameObjects = new Map();
-    }
-
-    addPlayer(player) {
-        this.players.set(player.id, player);
-        
-        if (!this.host) {
-            this.host = player.id;
-            player.isHost = true;
-        }
-        
-        // Рассылаем информацию о новом игроке всем участникам
-        this.broadcast({
-            type: 'player_joined',
-            player: player
-        }, player.id);
-        
-        // Отправляем новому игроку текущее состояние комнаты
-        player.socket.send(JSON.stringify({
-            type: 'room_joined',
-            playerId: player.id,
-            isHost: player.isHost,
-            players: Array.from(this.players.values()).map(p => ({
-                id: p.id,
-                name: p.name,
-                score: p.score,
-                isHost: p.isHost
-            }))
-        }));
-    }
-
-    removePlayer(playerId) {
-        const player = this.players.get(playerId);
-        if (player) {
-            this.players.delete(playerId);
-            
-            // Если хост вышел, назначаем нового
-            if (playerId === this.host && this.players.size > 0) {
-                const newHost = this.players.values().next().value;
-                newHost.isHost = true;
-                this.host = newHost.id;
-            }
-            
-            this.broadcast({
-                type: 'player_left',
-                playerId: playerId
-            });
-        }
-    }
-
-    broadcast(message, excludePlayerId = null) {
-        this.players.forEach((player) => {
-            if (player.id !== excludePlayerId && player.socket.readyState === WebSocket.OPEN) {
-                player.socket.send(JSON.stringify(message));
-            }
-        });
-    }
-
-    handleMessage(playerId, message) {
-        const player = this.players.get(playerId);
-        if (!player) return;
-
-        switch (message.type) {
-            case 'chat_message':
-                this.broadcast({
-                    type: 'chat_message',
-                    playerId: playerId,
-                    playerName: player.name,
-                    message: message.message,
-                    timestamp: message.timestamp
-                });
-                break;
-
-            case 'correct_answer':
-                if (playerId === this.host) {
-                    this.broadcast({
-                        type: 'correct_answer',
-                        playerId: message.playerId,
-                        points: message.points
-                    });
-                }
-                break;
-
-            case 'game_object_created':
-            case 'game_object_updated':
-            case 'game_object_removed':
-                if (playerId === this.host) {
-                    this.broadcast(message, playerId);
-                }
-                break;
-        }
-    }
-}
-
-wss.on('connection', (ws, req) => {
-    const parameters = url.parse(req.url, true);
-    const roomId = parameters.query.roomId;
-    const playerName = parameters.query.playerName;
-
-    if (!roomId || !playerName) {
-        ws.close(1008, 'Missing roomId or playerName');
-        return;
-    }
-
-    // Создаем или получаем комнату
-    if (!rooms.has(roomId)) {
-        rooms.set(roomId, new GameRoom(roomId));
-    }
-    const room = rooms.get(roomId);
-
-    const player = {
-        id: generatePlayerId(),
-        name: playerName,
-        score: 0,
-        isHost: false,
-        socket: ws
-    };
-
-    room.addPlayer(player);
-
-    ws.on('message', (data) => {
-        try {
-            const message = JSON.parse(data);
-            room.handleMessage(player.id, message);
-        } catch (error) {
-            console.error('Error parsing message:', error);
-        }
-    });
-
-    ws.on('close', () => {
-        room.removePlayer(player.id);
-        
-        // Если комната пустая, удаляем её
-        if (room.players.size === 0) {
-            rooms.delete(roomId);
-        }
-    });
-
-    ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        room.removePlayer(player.id);
-    });
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
-function generatePlayerId() {
-    return 'player_' + Math.random().toString(36).substr(2, 9);
-}
+// Middleware
+app.use(cors());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve the main HTML file
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Game state
+const rooms = new Map();
+const players = new Map();
+
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+
+  socket.on('join_room', (data) => {
+    const { roomId, playerName } = data;
+    
+    // Create room if it doesn't exist
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, {
+        id: roomId,
+        players: new Map(),
+        host: socket.id,
+        currentMovie: null,
+        gameState: 'waiting'
+      });
+    }
+
+    const room = rooms.get(roomId);
+    
+    // Add player to room
+    room.players.set(socket.id, {
+      id: socket.id,
+      name: playerName,
+      score: 0,
+      isHost: socket.id === room.host
+    });
+
+    players.set(socket.id, {
+      id: socket.id,
+      name: playerName,
+      roomId: roomId
+    });
+
+    // Join socket room
+    socket.join(roomId);
+
+    // Notify room about new player
+    io.to(roomId).emit('player_joined', {
+      player: room.players.get(socket.id),
+      players: Array.from(room.players.values())
+    });
+
+    console.log(`Player ${playerName} joined room ${roomId}`);
+  });
+
+  socket.on('chat_message', (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    const room = rooms.get(player.roomId);
+    if (!room) return;
+
+    const messageData = {
+      type: 'chat_message',
+      playerId: socket.id,
+      playerName: player.name,
+      message: data.message,
+      timestamp: Date.now()
+    };
+
+    // Check if message contains correct answer
+    if (room.currentMovie && room.gameState === 'playing') {
+      const userAnswer = data.message.toLowerCase().replace(/["«»]/g, '');
+      const correctAnswer = room.currentMovie.title.toLowerCase();
+      
+      if (userAnswer.includes(correctAnswer) || correctAnswer.includes(userAnswer)) {
+        messageData.isCorrect = true;
+        
+        // Update player score
+        const playerData = room.players.get(socket.id);
+        if (playerData) {
+          playerData.score += 1;
+          
+          io.to(player.roomId).emit('player_scored', {
+            playerId: socket.id,
+            playerName: player.name,
+            newScore: playerData.score,
+            message: data.message
+          });
+        }
+      }
+    }
+
+    io.to(player.roomId).emit('chat_message', messageData);
+  });
+
+  socket.on('start_game', (data) => {
+    const player = players.get(socket.id);
+    if (!player) return;
+
+    const room = rooms.get(player.roomId);
+    if (!room || room.host !== socket.id) return;
+
+    // Set random movie (in real implementation, you'd have a movie database)
+    const movies = [
+      { title: "Титаник", year: "1997" },
+      { title: "Матрица", year: "1999" },
+      { title: "Властелин Колец", year: "2001" },
+      { title: "Гарри Поттер", year: "2001" },
+      { title: "Звездные Войны", year: "1977" },
+      { title: "Аватар", year: "2009" },
+      { title: "Король Лев", year: "1994" },
+      { title: "Пираты Карибского моря", year: "2003" },
+      { title: "Холодное Сердце", year: "2013" },
+      { title: "Назад в будущее", year: "1985" }
+    ];
+
+    room.currentMovie = movies[Math.floor(Math.random() * movies.length)];
+    room.gameState = 'playing';
+
+    // Reveal movie only to host
+    socket.emit('movie_reveal', room.currentMovie);
+    
+    // Notify other players that game has started
+    socket.to(player.roomId).emit('game_started', {
+      message: "Игра началась! Создатель составляет сцену из фильма. Угадайте фильм!"
+    });
+
+    console.log(`Game started in room ${player.roomId} with movie: ${room.currentMovie.title}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    
+    const player = players.get(socket.id);
+    if (player) {
+      const room = rooms.get(player.roomId);
+      if (room) {
+        room.players.delete(socket.id);
+        
+        // If host disconnected, assign new host
+        if (room.host === socket.id && room.players.size > 0) {
+          const newHostId = Array.from(room.players.keys())[0];
+          room.host = newHostId;
+          room.players.get(newHostId).isHost = true;
+          
+          io.to(player.roomId).emit('new_host', {
+            newHostId: newHostId,
+            newHostName: room.players.get(newHostId).name
+          });
+        }
+
+        // Notify room about player leaving
+        io.to(player.roomId).emit('player_left', {
+          playerId: socket.id,
+          players: Array.from(room.players.values())
+        });
+
+        // Remove room if empty
+        if (room.players.size === 0) {
+          rooms.delete(player.roomId);
+        }
+      }
+      
+      players.delete(socket.id);
+    }
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`WebSocket server available at ws://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
-
-// Очистка пустых комнат каждые 5 минут
-setInterval(() => {
-    for (const [roomId, room] of rooms.entries()) {
-        if (room.players.size === 0) {
-            rooms.delete(roomId);
-        }
-    }
-}, 300000);
