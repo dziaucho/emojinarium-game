@@ -13,20 +13,16 @@ const io = socketIo(server, {
   }
 });
 
-// Middleware
 app.use(cors());
 app.use(express.static('public'));
 
-// Serve the main HTML file
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Game state
 const rooms = new Map();
 const players = new Map();
 
-// Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
@@ -34,7 +30,6 @@ io.on('connection', (socket) => {
     const { playerName } = data;
     const roomId = 'room_' + Math.random().toString(36).substr(2, 8);
     
-    // Create new room
     rooms.set(roomId, {
       id: roomId,
       players: new Map(),
@@ -46,7 +41,6 @@ io.on('connection', (socket) => {
 
     const room = rooms.get(roomId);
     
-    // Add player to room as host
     room.players.set(socket.id, {
       id: socket.id,
       name: playerName,
@@ -60,12 +54,10 @@ io.on('connection', (socket) => {
       roomId: roomId
     });
 
-    // Join socket room
     socket.join(roomId);
 
     console.log(`Room ${roomId} created by ${playerName}`);
 
-    // Return room ID to creator
     socket.emit('room_created', {
       roomId: roomId,
       player: room.players.get(socket.id)
@@ -81,7 +73,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Add player to room
     room.players.set(socket.id, {
       id: socket.id,
       name: playerName,
@@ -95,17 +86,14 @@ io.on('connection', (socket) => {
       roomId: roomId
     });
 
-    // Join socket room
     socket.join(roomId);
 
-    // Send current game state to new player
     socket.emit('room_state', {
       movie: room.currentMovie,
       gameObjects: room.gameObjects,
       players: Array.from(room.players.values())
     });
 
-    // Notify all players about new player
     io.to(roomId).emit('player_joined', {
       player: room.players.get(socket.id),
       players: Array.from(room.players.values())
@@ -114,7 +102,6 @@ io.on('connection', (socket) => {
     console.log(`Player ${playerName} joined room ${roomId}`);
   });
 
-  // Game object synchronization - ИСПРАВЛЕНО: отправляем всем включая отправителя
   socket.on('game_object_added', (data) => {
     const player = players.get(socket.id);
     if (!player) return;
@@ -122,10 +109,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room) return;
 
-    // Сохраняем объект в комнате
     room.gameObjects.push(data.object);
-    
-    // ОТПРАВЛЯЕМ ВСЕМ ИГРОКАМ В КОМНАТЕ
     io.to(player.roomId).emit('game_object_added', data);
   });
 
@@ -136,10 +120,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room) return;
 
-    // Удаляем объект из комнаты
     room.gameObjects = room.gameObjects.filter(obj => obj.id !== data.objectId);
-    
-    // ОТПРАВЛЯЕМ ВСЕМ ИГРОКАМ В КОМНАТЕ
     io.to(player.roomId).emit('game_object_removed', data);
   });
 
@@ -150,13 +131,11 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room) return;
 
-    // Обновляем объект в комнате
     const objIndex = room.gameObjects.findIndex(obj => obj.id === data.object.id);
     if (objIndex !== -1) {
       room.gameObjects[objIndex] = data.object;
     }
     
-    // ОТПРАВЛЯЕМ ВСЕМ ИГРОКАМ В КОМНАТЕ
     io.to(player.roomId).emit('game_object_updated', data);
   });
 
@@ -167,10 +146,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room) return;
 
-    // Очищаем все объекты
     room.gameObjects = [];
-    
-    // ОТПРАВЛЯЕМ ВСЕМ ИГРОКАМ В КОМНАТЕ
     io.to(player.roomId).emit('clear_game_field', data);
   });
 
@@ -181,7 +157,6 @@ io.on('connection', (socket) => {
     const room = rooms.get(player.roomId);
     if (!room || room.host !== socket.id) return;
 
-    // Set random movie
     const movies = [
       { title: "Титаник", year: "1997" },
       { title: "Матрица", year: "1999" },
@@ -198,10 +173,7 @@ io.on('connection', (socket) => {
     room.currentMovie = movies[Math.floor(Math.random() * movies.length)];
     room.gameState = 'playing';
 
-    // Reveal movie only to host
     socket.emit('movie_reveal', room.currentMovie);
-    
-    // Notify other players that game has started
     socket.to(player.roomId).emit('game_started', {
       message: "Игра началась! Создатель составляет сцену из фильма. Угадайте фильм!"
     });
@@ -224,7 +196,6 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     };
 
-    // Check if message contains correct answer
     if (room.currentMovie && room.gameState === 'playing') {
       const userAnswer = data.message.toLowerCase().replace(/["«»]/g, '');
       const correctAnswer = room.currentMovie.title.toLowerCase();
@@ -232,7 +203,6 @@ io.on('connection', (socket) => {
       if (userAnswer.includes(correctAnswer) || correctAnswer.includes(userAnswer)) {
         messageData.isCorrect = true;
         
-        // Update player score
         const playerData = room.players.get(socket.id);
         if (playerData) {
           playerData.score += 1;
@@ -259,7 +229,6 @@ io.on('connection', (socket) => {
       if (room) {
         room.players.delete(socket.id);
         
-        // If host disconnected, assign new host
         if (room.host === socket.id && room.players.size > 0) {
           const newHostId = Array.from(room.players.keys())[0];
           room.host = newHostId;
@@ -271,13 +240,11 @@ io.on('connection', (socket) => {
           });
         }
 
-        // Notify room about player leaving
         io.to(player.roomId).emit('player_left', {
           playerId: socket.id,
           players: Array.from(room.players.values())
         });
 
-        // Remove room if empty
         if (room.players.size === 0) {
           rooms.delete(player.roomId);
           console.log(`Room ${player.roomId} deleted (empty)`);
